@@ -1,0 +1,60 @@
+name: Restore link-preview tags
+
+# index.html is a single-file Claude Artifact export. Every re-export
+# regenerates its outer <head> from scratch, silently dropping the Open Graph
+# tags that iMessage/Slack/Twitter read — the artifact's own head content is
+# not carried across (only <title> is). This puts them back automatically so a
+# fresh export uploaded through the GitHub web UI cannot break link previews.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: link-previews
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Re-apply metadata
+        run: node apply-og.js index.html
+
+      - name: Verify a crawler can read the tags without JavaScript
+        run: |
+          set -euo pipefail
+          head_html=$(sed -n '1,/<\/head>/p' index.html)
+          count=$(printf '%s' "$head_html" | grep -c 'property="og:\|name="twitter:' || true)
+          if [ "$count" -lt 13 ]; then
+            echo "::error::Only $count og/twitter tags in the static head; expected 13."
+            exit 1
+          fi
+          if [ ! -f og-nwb.png ]; then
+            echo "::error::og-nwb.png is missing — previews would render with no image."
+            exit 1
+          fi
+          echo "OK: $count tags in the static head, preview image present."
+
+      - name: Commit if the export had dropped them
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain index.html)" ]; then
+            echo "Tags already intact — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "Restore link-preview tags after artifact re-export"
+          git push
